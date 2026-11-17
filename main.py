@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import socket
+import ssl
 import time
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -108,6 +110,19 @@ def handle(db, update, owner, price):
              "По кнопке откроется оформление подписки в Telegram.",
              [[{"text": "Открыть оплату в Telegram", "url": link}]])
 
+def network_reason(error):
+    reason = error.reason if isinstance(error, URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return "Не удалось проверить SSL-сертификат Telegram. Проверьте сертификаты и время на хостинге."
+    if isinstance(reason, socket.gaierror):
+        return "DNS хостинга не смог определить адрес api.telegram.org."
+    if isinstance(reason, TimeoutError):
+        return "Истекло время ожидания api.telegram.org."
+    if isinstance(reason, OSError):
+        return f"Ошибка сети хостинга: {type(reason).__name__}, код {reason.errno}."
+    return f"Ошибка подключения: {type(reason).__name__}."
+
+
 def main():
     if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", os.environ.get("BOT_TOKEN", "")):
         raise SystemExit("Задайте BOT_TOKEN в секретных переменных Bothost.")
@@ -121,9 +136,14 @@ def main():
     with sqlite3.connect(folder / "subscriptions.sqlite3") as db:
         db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         offset = None
-        print("Бот запущен. Откройте его и отправьте /id.", flush=True)
+        connected = False
+        print("Проверяю подключение к Telegram…", flush=True)
         while True:
             try:
+                if not connected:
+                    account = api("getMe")
+                    print(f"Подключён @{account['username']}. Отправьте /id этому боту.", flush=True)
+                    connected = True
                 updates = api("getUpdates", offset=offset, timeout=25,
                               allowed_updates=["message", "callback_query"])
                 for update in updates:
@@ -138,8 +158,9 @@ def main():
                 if error.code in (401, 404, 409):
                     raise SystemExit(f"Проверьте токен или другой запуск бота: {error.code}")
                 time.sleep(5)
-            except (URLError, TimeoutError, ConnectionError):
-                print("Повтор подключения…", flush=True)
+            except (URLError, TimeoutError, ConnectionError) as error:
+                connected = False
+                print(network_reason(error) + " Повтор через 5 секунд.", flush=True)
                 time.sleep(5)
 
 if __name__ == "__main__":
