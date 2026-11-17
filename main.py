@@ -7,7 +7,7 @@ import sqlite3
 import socket
 import ssl
 import time
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, getproxies
 from urllib.error import HTTPError, URLError
 
 class TelegramError(Exception):
@@ -123,6 +123,24 @@ def network_reason(error):
     return f"Ошибка подключения: {type(reason).__name__}."
 
 
+def check_network():
+    proxies = getproxies()
+    print("Прокси HTTPS настроен: " + ("да" if proxies.get("https") else "нет"), flush=True)
+    for family, label in ((socket.AF_INET, "IPv4"), (socket.AF_INET6, "IPv6")):
+        try:
+            addresses = socket.getaddrinfo("api.telegram.org", 443, family, socket.SOCK_STREAM)
+            address = addresses[0][4]
+            with socket.socket(family, socket.SOCK_STREAM) as connection:
+                connection.settimeout(5)
+                connection.connect(address)
+                with ssl.create_default_context().wrap_socket(
+                    connection, server_hostname="api.telegram.org"
+                ):
+                    print(f"{label}: прямое соединение и SSL работают.", flush=True)
+        except (OSError, URLError) as error:
+            print(f"{label}: " + network_reason(error), flush=True)
+
+
 def main():
     if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", os.environ.get("BOT_TOKEN", "")):
         raise SystemExit("Задайте BOT_TOKEN в секретных переменных Bothost.")
@@ -137,6 +155,7 @@ def main():
         db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         offset = None
         connected = False
+        diagnosed = False
         print("Проверяю подключение к Telegram…", flush=True)
         while True:
             try:
@@ -161,6 +180,9 @@ def main():
             except (URLError, TimeoutError, ConnectionError) as error:
                 connected = False
                 print(network_reason(error) + " Повтор через 5 секунд.", flush=True)
+                if not diagnosed:
+                    check_network()
+                    diagnosed = True
                 time.sleep(5)
 
 if __name__ == "__main__":
